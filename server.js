@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const chrono = require('chrono-node');
 
 const app = express();
 app.use(express.json());
@@ -74,9 +75,11 @@ app.post('/book', async (req, res) => {
     return sendError(400, `Unknown service "${service}". Available: Haircut ($30), Skin Fade ($40), Beard Trim ($20), Haircut+Beard ($50), Line Up ($15).`);
   }
 
-  const parsedDate = new Date(preferredDateTime);
-  if (isNaN(parsedDate.getTime())) {
-    return sendError(400, `Invalid date/time: "${preferredDateTime}". Use ISO 8601 (e.g. 2025-06-15T14:00:00).`);
+  // Try chrono first for natural language, fall back to native Date for ISO strings
+  const parsedDate = chrono.parseDate(preferredDateTime, new Date(), { forwardDate: true })
+    || new Date(preferredDateTime);
+  if (!parsedDate || isNaN(parsedDate.getTime())) {
+    return sendError(400, `Could not understand date/time: "${preferredDateTime}". Try something like "Tomorrow at 2pm" or "Saturday 3pm".`);
   }
 
   const bookings = loadBookings();
