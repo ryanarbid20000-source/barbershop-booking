@@ -94,6 +94,13 @@ app.post('/book', (req, res) => {
   bookings.push(booking);
   saveBookings(bookings);
 
+  // Notify make.com webhook (fire-and-forget)
+  fetch('https://hook.us2.make.com/mvv6i1og7it824hq5hhe2qx3dcpvmvcb', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(booking),
+  }).catch((err) => console.error('Webhook error:', err.message));
+
   return res.status(201).json({
     success: true,
     message: `Appointment confirmed! ${booking.customerName} is booked for a ${booking.service} on ${parsedDate.toDateString()} at ${parsedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Total: $${booking.price}.`,
