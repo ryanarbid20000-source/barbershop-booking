@@ -3,6 +3,14 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const chrono = require('chrono-node');
+const twilio = require('twilio');
+
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+const TWILIO_FROM = process.env.TWILIO_FROM_NUMBER;
+const BARBER_PHONE = process.env.BARBER_PHONE;
 
 const app = express();
 app.use(express.json());
@@ -140,6 +148,27 @@ app.post('/book', async (req, res) => {
     console.log('Webhook fired, status:', hookRes.status);
   } catch (err) {
     console.error('Webhook error:', err.message);
+  }
+
+  const humanDate = parsedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+    + ' at '
+    + parsedDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+  // Send SMS notifications
+  if (TWILIO_FROM && BARBER_PHONE) {
+    const barberMsg = `New Booking!\nName: ${booking.customerName}\nService: ${booking.service}\nDate: ${humanDate}\nPhone: ${booking.phone || 'N/A'}`;
+    const clientMsg = `Hey ${booking.customerName}! Your appointment is confirmed at Fresh Cuts for ${booking.service} on ${humanDate}. See you then! Reply CANCEL to cancel.`;
+
+    await Promise.allSettled([
+      twilioClient.messages.create({ to: BARBER_PHONE, from: TWILIO_FROM, body: barberMsg })
+        .then(() => console.log('Barber SMS sent'))
+        .catch((err) => console.error('Barber SMS error:', err.message)),
+      booking.phone
+        ? twilioClient.messages.create({ to: booking.phone, from: TWILIO_FROM, body: clientMsg })
+            .then(() => console.log('Client SMS sent'))
+            .catch((err) => console.error('Client SMS error:', err.message))
+        : Promise.resolve(),
+    ]);
   }
 
   const confirmMsg = `Appointment confirmed! ${booking.customerName} is booked for a ${booking.service} on ${parsedDate.toDateString()} at ${parsedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Total: $${booking.price}.`;
