@@ -209,6 +209,23 @@ app.delete('/bookings/:id', async (req, res) => {
   res.json({ success: true, message: `Booking for ${removed.customerName} has been cancelled.`, booking: removed });
 });
 
+// POST /get-current-date — Vapi tool that returns today's real date and day of week
+app.post('/get-current-date', (req, res) => {
+  const now = new Date();
+  const result = now.toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+  });
+
+  const toolCallList = req.body?.message?.toolCallList;
+  if (Array.isArray(toolCallList) && toolCallList.length > 0) {
+    return res.status(200).json({
+      results: [{ toolCallId: toolCallList[0].id, result }],
+    });
+  }
+
+  res.json({ date: result });
+});
+
 // Health check
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Barbershop Booking API' });
