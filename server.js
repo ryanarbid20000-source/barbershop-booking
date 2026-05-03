@@ -19,16 +19,31 @@ const SERVICES = {
   'lineup': { name: 'Line Up', price: 15 },
 };
 
-function loadBookings() {
-  if (!fs.existsSync(BOOKINGS_FILE)) {
-    fs.mkdirSync(path.dirname(BOOKINGS_FILE), { recursive: true });
-    fs.writeFileSync(BOOKINGS_FILE, JSON.stringify([], null, 2));
-  }
-  return JSON.parse(fs.readFileSync(BOOKINGS_FILE, 'utf8'));
-}
-
-function saveBookings(bookings) {
-  fs.writeFileSync(BOOKINGS_FILE, JSON.stringify(bookings, null, 2));
+// Storage: Upstash Redis in production, local JSON file in dev
+let storage;
+if (process.env.UPSTASH_REDIS_REST_URL) {
+  const { Redis } = require('@upstash/redis');
+  const redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  });
+  storage = {
+    load: async () => (await redis.get('bookings')) || [],
+    save: async (data) => redis.set('bookings', data),
+  };
+} else {
+  storage = {
+    load: async () => {
+      if (!fs.existsSync(BOOKINGS_FILE)) {
+        fs.mkdirSync(path.dirname(BOOKINGS_FILE), { recursive: true });
+        fs.writeFileSync(BOOKINGS_FILE, JSON.stringify([], null, 2));
+      }
+      return JSON.parse(fs.readFileSync(BOOKINGS_FILE, 'utf8'));
+    },
+    save: async (data) => {
+      fs.writeFileSync(BOOKINGS_FILE, JSON.stringify(data, null, 2));
+    },
+  };
 }
 
 function resolveService(input) {
@@ -40,7 +55,6 @@ function resolveService(input) {
 // POST /book — create a new appointment
 // Handles both direct POST and Vapi tool-call format
 app.post('/book', async (req, res) => {
-  // Vapi wraps tool call arguments under message.toolCallList[0].function.arguments
   let args = req.body;
   let vapiToolCallId = null;
 
@@ -82,7 +96,7 @@ app.post('/book', async (req, res) => {
     return sendError(400, `Could not understand date/time: "${preferredDateTime}". Try something like "Tomorrow at 2pm" or "Saturday 3pm".`);
   }
 
-  const bookings = loadBookings();
+  const bookings = await storage.load();
 
   const slotStart = parsedDate.getTime();
   const conflict = bookings.find((b) => {
@@ -106,14 +120,20 @@ app.post('/book', async (req, res) => {
   };
 
   bookings.push(booking);
-  saveBookings(bookings);
+  await storage.save(bookings);
 
   // Fire Make.com webhook and wait so we can log failures clearly
   try {
+    const webhookPayload = {
+      ...booking,
+      preferredDateTime: parsedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+        + ' at '
+        + parsedDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+    };
     const hookRes = await fetch('https://hook.us2.make.com/mvv6i1og7it824hq5hhe2qx3dcpvmvcb', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(booking),
+      body: JSON.stringify(webhookPayload),
     });
     console.log('Webhook fired, status:', hookRes.status);
   } catch (err) {
@@ -122,7 +142,6 @@ app.post('/book', async (req, res) => {
 
   const confirmMsg = `Appointment confirmed! ${booking.customerName} is booked for a ${booking.service} on ${parsedDate.toDateString()} at ${parsedDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Total: $${booking.price}.`;
 
-  // Return Vapi-compatible response when called from a Vapi tool
   if (vapiToolCallId) {
     return res.status(200).json({
       results: [{ toolCallId: vapiToolCallId, result: confirmMsg }],
@@ -132,9 +151,9 @@ app.post('/book', async (req, res) => {
   return res.status(201).json({ success: true, message: confirmMsg, booking });
 });
 
-// GET /bookings — list all bookings (optional, useful for debugging)
-app.get('/bookings', (req, res) => {
-  const bookings = loadBookings();
+// GET /bookings — list all bookings
+app.get('/bookings', async (req, res) => {
+  const bookings = await storage.load();
   res.json({ success: true, count: bookings.length, bookings });
 });
 
@@ -148,14 +167,14 @@ app.get('/services', (req, res) => {
 });
 
 // DELETE /bookings/:id — cancel a booking
-app.delete('/bookings/:id', (req, res) => {
-  const bookings = loadBookings();
+app.delete('/bookings/:id', async (req, res) => {
+  const bookings = await storage.load();
   const index = bookings.findIndex((b) => b.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ success: false, message: 'Booking not found.' });
   }
   const [removed] = bookings.splice(index, 1);
-  saveBookings(bookings);
+  await storage.save(bookings);
   res.json({ success: true, message: `Booking for ${removed.customerName} has been cancelled.`, booking: removed });
 });
 
@@ -164,7 +183,10 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Barbershop Booking API' });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Barbershop Booking API running on port ${PORT}`);
-});
+// Export for Vercel serverless; listen when run directly
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`Barbershop Booking API running on port ${PORT}`));
+}
+
+module.exports = app;
