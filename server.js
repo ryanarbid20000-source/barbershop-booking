@@ -69,7 +69,9 @@ app.post('/book', async (req, res) => {
   const customerName = args.customerName;
   const service = args.service;
   const preferredDateTime = args.preferredDateTime || args.preferredDataTime;
-  const phone = args.phone || null;
+  // Prefer the real caller number from Vapi call metadata over the tool argument,
+  // which may be a placeholder like "caller's phone number"
+  const phone = req.body?.message?.call?.customer?.number || args.phone || null;
 
   const sendError = (status, message) => {
     if (vapiToolCallId) {
