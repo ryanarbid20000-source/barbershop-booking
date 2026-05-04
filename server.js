@@ -214,6 +214,7 @@ app.post('/get-current-date', (req, res) => {
   const now = new Date();
   const result = now.toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    timeZone: 'America/New_York',
   });
 
   const toolCallList = req.body?.message?.toolCallList;
