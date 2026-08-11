@@ -4,6 +4,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const chrono = require('chrono-node');
 const twilio = require('twilio');
+const { google } = require('googleapis');
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -18,14 +19,34 @@ app.use(express.json());
 const BOOKINGS_FILE = path.join(__dirname, 'data', 'bookings.json');
 
 const SERVICES = {
-  'haircut': { name: 'Haircut', price: 30 },
-  'skin fade': { name: 'Skin Fade', price: 40 },
-  'beard trim': { name: 'Beard Trim', price: 20 },
-  'haircut+beard': { name: 'Haircut+Beard', price: 50 },
-  'haircut + beard': { name: 'Haircut+Beard', price: 50 },
-  'line up': { name: 'Line Up', price: 15 },
-  'lineup': { name: 'Line Up', price: 15 },
+  'haircut': { name: 'Haircut', price: 30, duration: 45 },
+  'skin fade': { name: 'Skin Fade', price: 40, duration: 60 },
+  'beard trim': { name: 'Beard Trim', price: 20, duration: 30 },
+  'haircut+beard': { name: 'Haircut+Beard', price: 50, duration: 75 },
+  'haircut + beard': { name: 'Haircut+Beard', price: 50, duration: 75 },
+  'line up': { name: 'Line Up', price: 15, duration: 30 },
+  'lineup': { name: 'Line Up', price: 15, duration: 30 },
 };
+
+async function createCalendarEvent(booking, startDate, durationMinutes) {
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_KEY || !process.env.GOOGLE_CALENDAR_ID) return;
+  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/calendar'],
+  });
+  const calendar = google.calendar({ version: 'v3', auth });
+  const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+  await calendar.events.insert({
+    calendarId: process.env.GOOGLE_CALENDAR_ID,
+    requestBody: {
+      summary: `${booking.service} — ${booking.customerName}`,
+      description: `Phone: ${booking.phone || 'N/A'}\nPrice: $${booking.price}\nBooked via AI receptionist`,
+      start: { dateTime: startDate.toISOString() },
+      end: { dateTime: endDate.toISOString() },
+    },
+  });
+}
 
 // Storage: Upstash Redis in production, local JSON file in dev
 let storage;
@@ -132,6 +153,11 @@ app.post('/book', async (req, res) => {
   bookings.push(booking);
   await storage.save(bookings);
 
+  // Create Google Calendar event (non-blocking — failure doesn't break the booking)
+  createCalendarEvent(booking, parsedDate, resolved.duration)
+    .then(() => console.log('Calendar event created'))
+    .catch((err) => console.error('Calendar error:', err.message));
+
   // Fire Make.com webhook and wait so we can log failures clearly
   try {
     const webhookPayload = {
@@ -207,6 +233,65 @@ app.delete('/bookings/:id', async (req, res) => {
   const [removed] = bookings.splice(index, 1);
   await storage.save(bookings);
   res.json({ success: true, message: `Booking for ${removed.customerName} has been cancelled.`, booking: removed });
+});
+
+// POST /cancel — Vapi tool to cancel the caller's next upcoming appointment by phone number
+app.post('/cancel', async (req, res) => {
+  const toolCallList = req.body?.message?.toolCallList;
+  const vapiToolCallId = Array.isArray(toolCallList) && toolCallList.length > 0
+    ? toolCallList[0].id
+    : null;
+
+  const sendResult = (message) => {
+    if (vapiToolCallId) {
+      return res.status(200).json({ results: [{ toolCallId: vapiToolCallId, result: message }] });
+    }
+    return res.json({ success: true, message });
+  };
+
+  const callerPhone = req.body?.message?.call?.customer?.number || req.body?.phone || null;
+  if (!callerPhone) {
+    return sendResult("I wasn't able to find your phone number. Please call back and try again.");
+  }
+
+  const bookings = await storage.load();
+  const now = Date.now();
+
+  // Find upcoming bookings for this caller, sorted soonest first
+  const upcoming = bookings
+    .filter((b) => b.phone === callerPhone && new Date(b.preferredDateTime).getTime() > now)
+    .sort((a, b) => new Date(a.preferredDateTime) - new Date(b.preferredDateTime));
+
+  if (upcoming.length === 0) {
+    return sendResult("I don't see any upcoming appointments for your number. Nothing to cancel.");
+  }
+
+  const target = upcoming[0];
+  const index = bookings.findIndex((b) => b.id === target.id);
+  bookings.splice(index, 1);
+  await storage.save(bookings);
+
+  const humanDate = new Date(target.preferredDateTime).toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric',
+  }) + ' at ' + new Date(target.preferredDateTime).toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+
+  // Notify barber and client of cancellation
+  if (TWILIO_FROM && BARBER_PHONE) {
+    const barberMsg = `Cancellation: ${target.customerName}'s ${target.service} on ${humanDate} has been cancelled.`;
+    const clientMsg = `Hi ${target.customerName}, your ${target.service} appointment on ${humanDate} at Fresh Cuts has been cancelled. Call us to rebook!`;
+    await Promise.allSettled([
+      twilioClient.messages.create({ to: BARBER_PHONE, from: TWILIO_FROM, body: barberMsg })
+        .catch((err) => console.error('Barber cancel SMS error:', err.message)),
+      target.phone
+        ? twilioClient.messages.create({ to: target.phone, from: TWILIO_FROM, body: clientMsg })
+            .catch((err) => console.error('Client cancel SMS error:', err.message))
+        : Promise.resolve(),
+    ]);
+  }
+
+  return sendResult(`Done! Your ${target.service} appointment on ${humanDate} has been cancelled. We hope to see you again soon.`);
 });
 
 // POST /get-current-date — Vapi tool that returns today's real date and day of week
