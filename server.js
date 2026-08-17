@@ -19,13 +19,17 @@ app.use(express.json());
 const BOOKINGS_FILE = path.join(__dirname, 'data', 'bookings.json');
 
 const SERVICES = {
-  'haircut': { name: 'Haircut', price: 30, duration: 45 },
-  'skin fade': { name: 'Skin Fade', price: 40, duration: 60 },
-  'beard trim': { name: 'Beard Trim', price: 20, duration: 30 },
-  'haircut+beard': { name: 'Haircut+Beard', price: 50, duration: 75 },
-  'haircut + beard': { name: 'Haircut+Beard', price: 50, duration: 75 },
-  'line up': { name: 'Line Up', price: 15, duration: 30 },
-  'lineup': { name: 'Line Up', price: 15, duration: 30 },
+  'botox': { name: 'Botox', price: 300, duration: 30 },
+  'dysport': { name: 'Dysport', price: 300, duration: 30 },
+  'filler': { name: 'Dermal Filler', price: 600, duration: 45 },
+  'dermal filler': { name: 'Dermal Filler', price: 600, duration: 45 },
+  'hydrafacial': { name: 'HydraFacial', price: 175, duration: 60 },
+  'hydra facial': { name: 'HydraFacial', price: 175, duration: 60 },
+  'chemical peel': { name: 'Chemical Peel', price: 150, duration: 45 },
+  'microneedling': { name: 'Microneedling', price: 300, duration: 60 },
+  'laser hair removal': { name: 'Laser Hair Removal', price: 200, duration: 45 },
+  'iv therapy': { name: 'IV Therapy', price: 150, duration: 45 },
+  'consultation': { name: 'Consultation', price: 0, duration: 30 },
 };
 
 async function createCalendarEvent(booking, startDate, durationMinutes) {
@@ -117,7 +121,7 @@ app.post('/book', async (req, res) => {
 
   const resolved = resolveService(service);
   if (!resolved) {
-    return sendError(400, `Unknown service "${service}". Available: Haircut ($30), Skin Fade ($40), Beard Trim ($20), Haircut+Beard ($50), Line Up ($15).`);
+    return sendError(400, `Unknown service "${service}". Available: Botox ($300), Dysport ($300), Dermal Filler ($600), HydraFacial ($175), Chemical Peel ($150), Microneedling ($300), Laser Hair Removal ($200), IV Therapy ($150), Consultation (free).`);
   }
 
   // Try chrono first for natural language, fall back to native Date for ISO strings
@@ -183,7 +187,7 @@ app.post('/book', async (req, res) => {
   // Send SMS notifications
   if (TWILIO_FROM && BARBER_PHONE) {
     const barberMsg = `New Booking!\nName: ${booking.customerName}\nService: ${booking.service}\nDate: ${humanDate}\nPhone: ${booking.phone || 'N/A'}`;
-    const clientMsg = `Hey ${booking.customerName}! Your appointment is confirmed at Fresh Cuts for ${booking.service} on ${humanDate}. See you then! Reply CANCEL to cancel.`;
+    const clientMsg = `Hey ${booking.customerName}! Your appointment is confirmed for ${booking.service} on ${humanDate}. See you then! Reply CANCEL to cancel.`;
 
     await Promise.allSettled([
       twilioClient.messages.create({ to: BARBER_PHONE, from: TWILIO_FROM, body: barberMsg })
@@ -280,7 +284,7 @@ app.post('/cancel', async (req, res) => {
   // Notify barber and client of cancellation
   if (TWILIO_FROM && BARBER_PHONE) {
     const barberMsg = `Cancellation: ${target.customerName}'s ${target.service} on ${humanDate} has been cancelled.`;
-    const clientMsg = `Hi ${target.customerName}, your ${target.service} appointment on ${humanDate} at Fresh Cuts has been cancelled. Call us to rebook!`;
+    const clientMsg = `Hi ${target.customerName}, your ${target.service} appointment on ${humanDate} has been cancelled. Call us to rebook!`;
     await Promise.allSettled([
       twilioClient.messages.create({ to: BARBER_PHONE, from: TWILIO_FROM, body: barberMsg })
         .catch((err) => console.error('Barber cancel SMS error:', err.message)),
